@@ -2,6 +2,11 @@
 name = "transportation"
 version = "1.0.0-pre1"
 authors = ["Jenna Magius <pyrosim@gmail.com>"]
+license = "BSD-2-Clause"
+description = "A communications library"
+documentation = "https://oxy-secure.app/doc/transportation/"
+homepage = "https://oxy-secure.app"
+repository = "https://github.com/oxy-secure/transportation"
 
 [features]
 encrypt = ["ring", "untrusted", "num", "lazy_static"]
