@@ -29,10 +29,28 @@ impl ProtocolTransport {
 		serde_cbor::from_slice(&message[..]).unwrap()
 	}
 
+	pub fn recv_tolerant<T: DeserializeOwned>(&self) -> Option<Option<T>> {
+		let message = self.mt.recv();
+		if message.is_none() {
+			return None;
+		}
+		let message = message.unwrap();
+		trace!("Trying to deserialize input: {:?}", message);
+		Some(serde_cbor::from_slice(&message[..]).ok())
+	}
+
 	pub fn recv_all<T: DeserializeOwned>(&self) -> Vec<T> {
 		let mut result = Vec::new();
 		for i in self.mt.recv_all() {
 			result.push(serde_cbor::from_slice(&i).unwrap());
+		}
+		result
+	}
+
+	pub fn recv_all_tolerant<T: DeserializeOwned>(&self) -> Vec<Option<T>> {
+		let mut result = Vec::new();
+		for i in self.mt.recv_all() {
+			result.push(serde_cbor::from_slice(&i).ok());
 		}
 		result
 	}
