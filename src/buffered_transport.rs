@@ -90,7 +90,9 @@ impl BufferedTransport {
 			return None;
 		}
 		self.take_chunk(2).unwrap();
-		Some(self.take_chunk(preamble as usize).unwrap())
+		let result = Some(self.take_chunk(preamble as usize).unwrap());
+		self.update_registration();
+		result
 	}
 
 	pub fn recv_all_messages(&self) -> Vec<Vec<u8>> {
