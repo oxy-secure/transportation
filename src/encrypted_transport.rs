@@ -17,7 +17,7 @@ pub struct EncryptedTransport {
 }
 
 struct EncryptedTransportInternal {
-	pub bt:            BufferedTransport,
+	bt:                BufferedTransport,
 	perspective:       EncryptionPerspective,
 	inbound_iv:        BigUint,
 	outbound_iv:       BigUint,
@@ -50,6 +50,10 @@ impl EncryptedTransport {
 		result
 	}
 
+	pub fn is_drained_forward(&self) -> bool {
+		self.internal.borrow_mut().bt.write_buffer.borrow_mut().is_empty()
+	}
+	
 	pub fn is_closed(&self) -> bool {
 		self.internal.borrow_mut().bt.is_closed()
 	}
