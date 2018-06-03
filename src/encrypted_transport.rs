@@ -51,7 +51,8 @@ impl EncryptedTransport {
 	}
 
 	pub fn is_drained_forward(&self) -> bool {
-		self.internal.borrow_mut().bt.write_buffer.borrow_mut().is_empty()
+		let internal = self.internal.borrow_mut();
+		internal.bt.write_buffer.borrow_mut().is_empty()
 	}
 	
 	pub fn is_closed(&self) -> bool {
