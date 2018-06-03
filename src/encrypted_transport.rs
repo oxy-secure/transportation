@@ -17,7 +17,7 @@ pub struct EncryptedTransport {
 }
 
 struct EncryptedTransportInternal {
-	bt:                BufferedTransport,
+	pub bt:            BufferedTransport,
 	perspective:       EncryptionPerspective,
 	inbound_iv:        BigUint,
 	outbound_iv:       BigUint,
