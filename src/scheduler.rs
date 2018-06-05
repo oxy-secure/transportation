@@ -1,11 +1,19 @@
 use mio::{Event, Events, Poll};
 use notify::Notifiable;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+	cell::RefCell, collections::HashMap, rc::Rc, time::{Duration, Instant},
+};
 
 thread_local! {
 	pub static POLL: Poll = Poll::new().unwrap();
 	static LISTENERS: RefCell<HashMap<usize, Rc<Notifiable>>> = RefCell::new(HashMap::new());
 	pub static EVENT: RefCell<Option<Event>> = RefCell::new(None);
+	static TIMECALLBACKS: RefCell<Vec<(Instant, Rc<Notifiable>)>> = RefCell::new(Vec::new());
+}
+
+pub fn set_timeout(callback: Rc<Notifiable>, duration: Duration) {
+	let when = Instant::now() + duration;
+	TIMECALLBACKS.with(|x| x.borrow_mut().push((when, callback)));
 }
 
 fn find_key(mut existing_keys: Vec<usize>) -> usize {
@@ -45,7 +53,7 @@ pub fn get_event() -> Event {
 }
 
 fn empty() -> bool {
-	LISTENERS.with(|x| x.borrow_mut().keys().len()) == 0
+	LISTENERS.with(|x| x.borrow_mut().keys().len()) == 0 && TIMECALLBACKS.with(|x| x.borrow().len()) == 0
 }
 
 pub fn run() -> ! {
@@ -55,7 +63,30 @@ pub fn run() -> ! {
 		if empty() {
 			::std::process::exit(0);
 		}
-		POLL.with(|x| x.poll(&mut events, None).unwrap());
+		let now = Instant::now();
+		let mut timecallback = None;
+		let mut duration = None;
+		let mut remove_idx = 0;
+		TIMECALLBACKS.with(|x| {
+			for (k, v) in x.borrow().iter().enumerate() {
+				if v.0 < now {
+					timecallback = Some(v.1.clone());
+					duration = Some(Duration::from_secs(0));
+					remove_idx = k;
+					return;
+				}
+				if duration.is_none() || v.0.duration_since(now) < duration.unwrap() {
+					timecallback = Some(v.1.clone());
+					duration = Some(v.0.duration_since(now));
+					remove_idx = k;
+				}
+			}
+		});
+		POLL.with(|x| x.poll(&mut events, duration).unwrap());
+		if duration.is_some() && now.elapsed() >= duration.unwrap() {
+			TIMECALLBACKS.with(|x| x.borrow_mut().remove(remove_idx));
+			timecallback.unwrap().notify();
+		}
 		for event in events.iter() {
 			handle_event(event);
 		}
