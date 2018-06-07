@@ -48,6 +48,8 @@ mod notify;
 #[cfg(feature = "protocol")]
 mod protocol_transport;
 mod scheduler;
+#[cfg(unix)]
+mod signals;
 mod transport;
 
 pub use buffered_transport::BufferedTransport;
@@ -59,7 +61,11 @@ pub use message_transport::MessageTransport;
 pub use notify::{Notifiable, Notifies};
 #[cfg(feature = "protocol")]
 pub use protocol_transport::ProtocolTransport;
-pub use scheduler::{borrow_poll, get_event, insert_listener, remove_listener, run};
+pub use scheduler::{borrow_poll, get_event, insert_listener, remove_listener, run, set_timeout};
+#[cfg(unix)]
+pub use signals::get_signal_name;
+#[cfg(unix)]
+pub use signals::set_signal_handler;
 
 #[cfg(feature = "encrypt")]
 lazy_static! {
