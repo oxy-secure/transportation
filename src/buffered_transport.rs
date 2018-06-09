@@ -37,6 +37,13 @@ impl BufferedTransport {
 		result
 	}
 
+	#[cfg(unix)]
+	pub fn create_pair() -> (BufferedTransport, BufferedTransport) {
+		use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
+		let (socka, sockb) = socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
+		(socka.into(), sockb.into())
+	}
+
 	fn register(&self) {
 		POLL.with(|x| {
 			x.register(
