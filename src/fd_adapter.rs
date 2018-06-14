@@ -9,7 +9,7 @@ use std::{
 };
 
 pub struct FdAdapter {
-	fd: RawFd,
+	pub fd: RawFd,
 }
 
 fn errno<T>() -> io::Result<T> {
