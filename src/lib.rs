@@ -66,6 +66,7 @@ pub use scheduler::{borrow_poll, get_event, insert_listener, remove_listener, ru
 pub use signals::get_signal_name;
 #[cfg(unix)]
 pub use signals::set_signal_handler;
+pub use transport::Transport;
 
 #[cfg(feature = "encrypt")]
 lazy_static! {
