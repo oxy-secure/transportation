@@ -123,7 +123,12 @@ impl BufferedTransport {
 		self.closed.borrow_mut().clone()
 	}
 	
-	pub fn close(&self) -> Result<(),()> {
+	pub fn close(&self) {
+		let proxy = self.clone();
+		::set_timeout(Rc::new(|| proxy.close_real().ok()), ::std::time::Duration::from_secs(0));
+	}
+	
+	fn close_real(&self) -> Result<(),()> {
 		*self.closed.borrow_mut() = true;
 		self.update_registration();
 		self.underlying.borrow_mut().flush().map_err(|_| ())?;
