@@ -53,7 +53,7 @@ impl BufferedTransport {
 				&*self.underlying.borrow_mut(),
 				Token(*self.key.borrow_mut()),
 				Ready::readable(),
-				PollOpt::edge(),
+				PollOpt::level(),
 			).unwrap()
 		});
 	}
@@ -63,14 +63,18 @@ impl BufferedTransport {
 	}
 
 	pub fn take_chunk(&self, size: usize) -> Option<Vec<u8>> {
-		let mut lock = self.read_buffer.borrow_mut();
-		if lock.len() < size {
-			trace!("No chunk of size {} available.", size);
-			return None;
+		let mut tail;
+		{
+			let mut lock = self.read_buffer.borrow_mut();
+			if lock.len() < size {
+				trace!("No chunk of size {} available.", size);
+				return None;
+			}
+			trace!("Taking chunk: {}", size);
+			tail = lock.split_off(size);
+			swap(&mut *lock, &mut tail);
 		}
-		trace!("Taking chunk: {}", size);
-		let mut tail = lock.split_off(size);
-		swap(&mut *lock, &mut tail);
+		self.update_registration();
 		Some(tail)
 	}
 
@@ -127,12 +131,15 @@ impl BufferedTransport {
 	}
 
 	pub fn close(&self) {
+		debug!("Close requested");
 		let proxy = self.clone();
 		::set_timeout(
 			Rc::new(move || {
 				if proxy.is_closed() || proxy.write_buffer.borrow().is_empty() {
+					debug!("Attempting close_real");
 					proxy.close_real().ok();
 				} else {
+					debug!("Punting close.");
 					let proxy = proxy.clone();
 					::set_timeout(
 						Rc::new(move || {
@@ -149,18 +156,16 @@ impl BufferedTransport {
 	fn close_real(&self) -> Result<(), ()> {
 		*self.closed.borrow_mut() = true;
 		self.update_registration();
-		self.underlying.borrow_mut().flush().map_err(|_| ())?;
+		let result = self.underlying.borrow_mut().flush();
+		if result.is_err() {
+			debug!("Flush error: {:?}", result);
+		}
 		match &mut *self.underlying.borrow_mut() {
 			Transport::TcpStream(x) => {
 				#[cfg(unix)]
 				{
-					use nix::{
-						sys::socket::{shutdown, Shutdown},
-						unistd::close,
-					};
+					use nix::unistd::close;
 					use std::os::unix::io::AsRawFd;
-					shutdown(x.as_raw_fd(), Shutdown::Both).map_err(|_| ())?;
-					debug!("Shutdown successful.");
 					close(x.as_raw_fd()).map_err(|_| ())?;
 					debug!("Close successful.");
 				}
@@ -169,13 +174,11 @@ impl BufferedTransport {
 			}
 			#[cfg(unix)]
 			Transport::FdAdapter(x) => {
-				use nix::{
-					sys::socket::{shutdown, Shutdown},
-					unistd::close,
-				};
-				shutdown(x.fd, Shutdown::Both).map_err(|_| ())?;
-				debug!("Raw FD Shutdown successful.");
-				close(x.fd).map_err(|_| ())?;
+				use nix::unistd::close;
+				debug!("Before close");
+				let result = close(x.fd);
+				debug!("Close result: {:?}", result);
+				result.map_err(|_| ())?;
 				debug!("Raw FD close successful.");
 			}
 		}
@@ -197,7 +200,7 @@ impl BufferedTransport {
 			readiness |= Ready::readable();
 		}
 		POLL.with(|x| {
-			x.reregister(&*self.underlying.borrow_mut(), Token(*self.key.borrow_mut()), readiness, PollOpt::edge())
+			x.reregister(&*self.underlying.borrow_mut(), Token(*self.key.borrow_mut()), readiness, PollOpt::level())
 				.unwrap()
 		});
 	}
@@ -206,15 +209,26 @@ impl BufferedTransport {
 impl Notifiable for BufferedTransport {
 	fn notify(&self) {
 		let event = get_event();
-		if event.readiness().is_readable() {
-			let result = self.underlying.borrow_mut().read_to_end(&mut *self.read_buffer.borrow_mut());
+		let mut hup = false;
+		#[cfg(unix)]
+		{
+			if UnixReady::from(event.readiness()).is_hup() {
+				debug!("Got HUP");
+				hup = true;
+			}
+		}
+		if event.readiness().is_readable() || hup {
+			let mut buf = [0u8; 16384];
+			let result = self.underlying.borrow_mut().read(&mut buf);
 			trace!("Read result: {:?}", result);
-			trace!("Read buffer size: {:?}", self.read_buffer.borrow_mut().len());
 			if let Ok(size) = result {
 				if size == 0 {
 					*self.closed.borrow_mut() = true;
+				} else {
+					self.read_buffer.borrow_mut().extend(&buf[..size]);
 				}
 			}
+			trace!("Read buffer size: {:?}", self.read_buffer.borrow_mut().len());
 		}
 		if event.readiness().is_writable() {
 			loop {
@@ -231,12 +245,6 @@ impl Notifiable for BufferedTransport {
 					let tail = self.write_buffer.borrow_mut().split_off(result.unwrap());
 					*self.write_buffer.borrow_mut() = tail;
 				}
-			}
-		}
-		#[cfg(unix)]
-		{
-			if UnixReady::from(event.readiness()).is_hup() {
-				*self.closed.borrow_mut() = true;
 			}
 		}
 		if self.notify_hook.borrow_mut().is_some() {
