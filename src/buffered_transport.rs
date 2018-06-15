@@ -126,9 +126,9 @@ impl BufferedTransport {
 	pub fn close(&self) -> Result<(),()> {
 		*self.closed.borrow_mut() = true;
 		self.update_registration();
-		match self.underlying.borrow_mut() {
+		match &mut *self.underlying.borrow_mut() {
 			Transport::TcpStream(x) => {
-				x.shutdown(std::net::Shutdown::Both).map_err(|_| ())?;
+				x.shutdown(::std::net::Shutdown::Both).map_err(|_| ())?;
 			}
 			#[cfg(unix)]
 			Transport::FdAdapter(x) => {
@@ -136,6 +136,7 @@ impl BufferedTransport {
 				close(x.fd).map_err(|_| ())?;
 			}
 		}
+		Ok(())
 	}
 
 	fn update_registration(&self) {
