@@ -5,7 +5,10 @@ use mio::{PollOpt, Ready, Token};
 use notify::{Notifiable, Notifies};
 use scheduler::{get_event, insert_listener, remove_listener, POLL};
 use std::{
-	cell::RefCell, io::{self, Read, Write}, mem::swap, rc::Rc,
+	cell::RefCell,
+	io::{self, Read, Write},
+	mem::swap,
+	rc::Rc,
 };
 use transport::Transport;
 
@@ -122,24 +125,58 @@ impl BufferedTransport {
 	pub fn is_closed(&self) -> bool {
 		self.closed.borrow_mut().clone()
 	}
-	
+
 	pub fn close(&self) {
 		let proxy = self.clone();
-		::set_timeout(Rc::new(move || { proxy.close_real().ok(); }), ::std::time::Duration::from_secs(0));
+		::set_timeout(
+			Rc::new(move || {
+				if proxy.is_closed() || proxy.write_buffer.borrow().is_empty() {
+					proxy.close_real().ok();
+				} else {
+					let proxy = proxy.clone();
+					::set_timeout(
+						Rc::new(move || {
+							proxy.close();
+						}),
+						::std::time::Duration::from_secs(0),
+					);
+				}
+			}),
+			::std::time::Duration::from_secs(0),
+		);
 	}
-	
-	fn close_real(&self) -> Result<(),()> {
+
+	fn close_real(&self) -> Result<(), ()> {
 		*self.closed.borrow_mut() = true;
 		self.update_registration();
 		self.underlying.borrow_mut().flush().map_err(|_| ())?;
 		match &mut *self.underlying.borrow_mut() {
 			Transport::TcpStream(x) => {
+				#[cfg(unix)]
+				{
+					use nix::{
+						sys::socket::{shutdown, Shutdown},
+						unistd::close,
+					};
+					use std::os::unix::io::AsRawFd;
+					shutdown(x.as_raw_fd(), Shutdown::Both).map_err(|_| ())?;
+					debug!("Shutdown successful.");
+					close(x.as_raw_fd()).map_err(|_| ())?;
+					debug!("Close successful.");
+				}
+				#[cfg(windows)]
 				x.shutdown(::std::net::Shutdown::Both).map_err(|_| ())?;
 			}
 			#[cfg(unix)]
 			Transport::FdAdapter(x) => {
-				use nix::unistd::close;
+				use nix::{
+					sys::socket::{shutdown, Shutdown},
+					unistd::close,
+				};
+				shutdown(x.fd, Shutdown::Both).map_err(|_| ())?;
+				debug!("Raw FD Shutdown successful.");
 				close(x.fd).map_err(|_| ())?;
+				debug!("Raw FD close successful.");
 			}
 		}
 		Ok(())
