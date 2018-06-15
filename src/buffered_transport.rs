@@ -122,6 +122,21 @@ impl BufferedTransport {
 	pub fn is_closed(&self) -> bool {
 		self.closed.borrow_mut().clone()
 	}
+	
+	pub fn close(&self) -> Result<(),()> {
+		*self.closed.borrow_mut() = true;
+		self.update_registration();
+		match self.underlying.borrow_mut() {
+			Transport::TcpStream(x) => {
+				x.shutdown(std::net::Shutdown::Both).map_err(|_| ())?;
+			}
+			#[cfg(unix)]
+			Transport::FdAdapter(x) => {
+				use nix::unistd::close;
+				close(x.fd).map_err(|_| ())?;
+			}
+		}
+	}
 
 	fn update_registration(&self) {
 		if self.closed.borrow_mut().clone() {
