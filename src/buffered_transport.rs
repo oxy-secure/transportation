@@ -126,6 +126,7 @@ impl BufferedTransport {
 	pub fn close(&self) -> Result<(),()> {
 		*self.closed.borrow_mut() = true;
 		self.update_registration();
+		self.underlying.borrow_mut().flush().map_err(|_| ())?;
 		match &mut *self.underlying.borrow_mut() {
 			Transport::TcpStream(x) => {
 				x.shutdown(::std::net::Shutdown::Both).map_err(|_| ())?;
