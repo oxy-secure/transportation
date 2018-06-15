@@ -125,7 +125,7 @@ impl BufferedTransport {
 	
 	pub fn close(&self) {
 		let proxy = self.clone();
-		::set_timeout(Rc::new(|| proxy.close_real().ok()), ::std::time::Duration::from_secs(0));
+		::set_timeout(Rc::new(|| { proxy.close_real().ok(); }), ::std::time::Duration::from_secs(0));
 	}
 	
 	fn close_real(&self) -> Result<(),()> {
