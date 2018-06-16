@@ -1,12 +1,12 @@
 use byteorder::{self, ByteOrder};
 #[cfg(unix)]
 use mio::unix::UnixReady;
-use mio::{PollOpt, Ready, Token};
+use mio::{self, PollOpt, Ready, Registration, Token};
 use notify::{Notifiable, Notifies};
 use scheduler::{get_event, insert_listener, remove_listener, POLL};
 use std::{
 	cell::RefCell,
-	io::{self, Read, Write},
+	io::{self, ErrorKind, Read, Write},
 	mem::swap,
 	rc::Rc,
 };
@@ -21,6 +21,7 @@ pub struct BufferedTransport {
 	closed:           Rc<RefCell<bool>>,
 	key:              Rc<RefCell<usize>>,
 	pub read_limit:   Rc<RefCell<usize>>,
+	registration:     Rc<RefCell<Option<Registration>>>,
 }
 
 impl BufferedTransport {
@@ -33,6 +34,7 @@ impl BufferedTransport {
 			closed:       Rc::new(RefCell::new(false)),
 			key:          Rc::new(RefCell::new(0)),
 			read_limit:   Rc::new(RefCell::new(16384)),
+			registration: Rc::new(RefCell::new(None)),
 		};
 		let key = insert_listener(Rc::new(result.clone()));
 		*result.key.borrow_mut() = key;
@@ -49,12 +51,21 @@ impl BufferedTransport {
 
 	fn register(&self) {
 		POLL.with(|x| {
-			x.register(
+			let result = x.register(
 				&*self.underlying.borrow_mut(),
 				Token(*self.key.borrow_mut()),
 				Ready::readable(),
 				PollOpt::level(),
-			).unwrap()
+			);
+			if result.is_err() && result.unwrap_err().kind() == ErrorKind::PermissionDenied {
+				debug!("Using plain-file shim");
+				// This is a hack to let BufferedTransport work on FDs that refer to filesystem files.
+				let (registration, setreadiness) = mio::Registration::new2();
+				x.register(&registration, Token(*self.key.borrow_mut()), Ready::readable(), PollOpt::level())
+					.unwrap();
+				setreadiness.set_readiness(Ready::readable()).unwrap();
+				*self.registration.borrow_mut() = Some(registration);
+			}
 		});
 	}
 
@@ -186,8 +197,15 @@ impl BufferedTransport {
 	}
 
 	fn update_registration(&self) {
+		let registration_borrow = self.registration.borrow();
+		let underlying_borrow = self.underlying.borrow();
+		let poll_obj: &mio::Evented = if self.registration.borrow().is_some() {
+			registration_borrow.as_ref().unwrap()
+		} else {
+			&*underlying_borrow
+		};
 		if self.closed.borrow_mut().clone() {
-			if POLL.with(|x| x.deregister(&*self.underlying.borrow_mut())).is_ok() {
+			if POLL.with(|x| x.deregister(poll_obj)).is_ok() {
 				remove_listener(self.key.borrow_mut().clone());
 			}
 			return;
@@ -200,7 +218,7 @@ impl BufferedTransport {
 			readiness |= Ready::readable();
 		}
 		POLL.with(|x| {
-			x.reregister(&*self.underlying.borrow_mut(), Token(*self.key.borrow_mut()), readiness, PollOpt::level())
+			x.reregister(poll_obj, Token(*self.key.borrow_mut()), readiness, PollOpt::level())
 				.unwrap()
 		});
 	}
@@ -208,6 +226,9 @@ impl BufferedTransport {
 
 impl Notifiable for BufferedTransport {
 	fn notify(&self) {
+		if self.registration.borrow().is_some() {
+			debug!("Plain file shim hitting.");
+		}
 		let event = get_event();
 		let mut hup = false;
 		#[cfg(unix)]
