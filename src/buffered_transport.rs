@@ -63,7 +63,7 @@ impl BufferedTransport {
 				let (registration, setreadiness) = mio::Registration::new2();
 				x.register(&registration, Token(*self.key.borrow_mut()), Ready::readable(), PollOpt::level())
 					.unwrap();
-				setreadiness.set_readiness(Ready::readable()).unwrap();
+				setreadiness.set_readiness(Ready::readable() | Ready::writable()).unwrap();
 				*self.registration.borrow_mut() = Some(registration);
 			}
 		});
