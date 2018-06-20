@@ -44,8 +44,12 @@ pub fn insert_listener(listener: Rc<Notifiable>) -> usize {
 fn handle_event(event: Event) {
 	EVENT.with(|x| *x.borrow_mut() = Some(event));
 	let key: usize = event.token().0;
-	let handler = LISTENERS.with(|x| x.borrow_mut().get(&key).unwrap().clone());
-	handler.notify();
+	let handler = LISTENERS.with(|x| x.borrow_mut().get(&key).map(|x| x.clone()));
+	if handler.is_none() {
+		warn!("Event with no handler: {:?}", event);
+		return;
+	}
+	handler.unwrap().notify();
 }
 
 pub fn get_event() -> Event {
