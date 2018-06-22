@@ -35,6 +35,8 @@ extern crate log;
 #[cfg(feature = "encrypt")]
 extern crate lazy_static;
 extern crate byteorder;
+#[cfg(feature = "protocol")]
+extern crate libflate;
 
 mod buffered_transport;
 #[cfg(feature = "encrypt")]
