@@ -205,9 +205,8 @@ impl BufferedTransport {
 			&*underlying_borrow
 		};
 		if self.closed.borrow_mut().clone() {
-			if POLL.with(|x| x.deregister(poll_obj)).is_ok() {
-				remove_listener(self.key.borrow_mut().clone());
-			}
+			POLL.with(|x| x.deregister(poll_obj)).ok();
+			remove_listener(self.key.borrow_mut().clone());
 			return;
 		}
 		let mut readiness = Ready::empty();
@@ -217,10 +216,13 @@ impl BufferedTransport {
 		if self.read_buffer.borrow_mut().len() < self.read_limit.borrow_mut().clone() {
 			readiness |= Ready::readable();
 		}
-		POLL.with(|x| {
-			x.reregister(poll_obj, Token(*self.key.borrow_mut()), readiness, PollOpt::level())
-				.unwrap()
-		});
+		let result = POLL.with(|x| x.reregister(poll_obj, Token(*self.key.borrow_mut()), readiness, PollOpt::level()));
+		if result.is_err() {
+			warn!("Update registration failed: {:?}", result);
+			*self.closed.borrow_mut() = true;
+			POLL.with(|x| x.deregister(poll_obj)).ok();
+			remove_listener(self.key.borrow_mut().clone());
+		}
 	}
 }
 

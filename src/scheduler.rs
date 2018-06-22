@@ -1,7 +1,10 @@
 use mio::{Event, Events, Poll};
 use notify::Notifiable;
 use std::{
-	cell::RefCell, collections::HashMap, rc::Rc, time::{Duration, Instant},
+	cell::RefCell,
+	collections::HashMap,
+	rc::Rc,
+	time::{Duration, Instant},
 };
 
 thread_local! {
@@ -32,7 +35,10 @@ where
 }
 
 pub fn remove_listener(key: usize) {
-	LISTENERS.with(|x| x.borrow_mut().remove(&key));
+	let result = LISTENERS.with(|x| x.borrow_mut().remove(&key));
+	if result.is_none() {
+		debug!("Attempted to remove a non-existent listener");
+	}
 }
 
 pub fn insert_listener(listener: Rc<Notifiable>) -> usize {
