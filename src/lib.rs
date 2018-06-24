@@ -9,7 +9,7 @@
 //! data)
 //!
 //! To use the low-level interface:
-//! 1. Create a type that implements Notifiable
+//! 1. Create a type that implements Notifiable ( An Fn() -> () closure is great for this )
 //! 2. Register an instance of your type with the reactor using insert_listener()
 //! 3. Use the usize returned by insert_listener() as an Mio::token() to register with the mio::Poll from borrow_poll(). Get your types from the
 //! re-exported mio crate to ensure the versions match.
