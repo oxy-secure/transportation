@@ -71,6 +71,7 @@ pub fn run() -> ! {
 	let mut events = Events::with_capacity(1024);
 	loop {
 		if empty() {
+			trace!("Exiting due to empty condition.");
 			::std::process::exit(0);
 		}
 		let now = Instant::now();
