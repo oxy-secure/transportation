@@ -19,58 +19,26 @@
 pub extern crate mio;
 #[cfg(unix)]
 extern crate nix;
-#[cfg(feature = "encrypt")]
-extern crate num;
-#[cfg(feature = "encrypt")]
-pub extern crate ring;
-#[cfg(feature = "protocol")]
-extern crate serde;
-#[cfg(feature = "protocol")]
-extern crate serde_cbor;
-#[cfg(feature = "encrypt")]
-pub extern crate untrusted; // Seems bizzare that ring itself does not reexport untrusted.
 #[macro_use]
 extern crate log;
-#[macro_use]
-#[cfg(feature = "encrypt")]
-extern crate lazy_static;
 extern crate byteorder;
-#[cfg(feature = "protocol")]
-extern crate libflate;
 
 mod buffered_transport;
-#[cfg(feature = "encrypt")]
-mod encrypt;
-#[cfg(feature = "encrypt")]
-mod encrypted_transport;
 #[cfg(unix)]
 mod fd_adapter;
 mod message_transport;
 mod notify;
-#[cfg(feature = "protocol")]
-mod protocol_transport;
 mod scheduler;
 #[cfg(unix)]
 mod signals;
 mod transport;
 
 pub use buffered_transport::BufferedTransport;
-#[cfg(feature = "encrypt")]
-pub use encrypted_transport::EncryptedTransport;
-#[cfg(feature = "encrypt")]
-pub use encrypted_transport::EncryptionPerspective;
 pub use message_transport::MessageTransport;
 pub use notify::{Notifiable, Notifies};
-#[cfg(feature = "protocol")]
-pub use protocol_transport::ProtocolTransport;
 pub use scheduler::{borrow_poll, get_event, insert_listener, remove_listener, run, set_timeout};
 #[cfg(unix)]
 pub use signals::get_signal_name;
 #[cfg(unix)]
 pub use signals::set_signal_handler;
 pub use transport::Transport;
-
-#[cfg(feature = "encrypt")]
-lazy_static! {
-	pub static ref RNG: ring::rand::SystemRandom = ring::rand::SystemRandom::new();
-}
