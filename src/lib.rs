@@ -26,7 +26,6 @@ extern crate byteorder;
 mod buffered_transport;
 #[cfg(unix)]
 mod fd_adapter;
-mod message_transport;
 mod notify;
 mod scheduler;
 #[cfg(unix)]
@@ -34,7 +33,6 @@ mod signals;
 mod transport;
 
 pub use buffered_transport::BufferedTransport;
-pub use message_transport::MessageTransport;
 pub use notify::{Notifiable, Notifies};
 pub use scheduler::{borrow_poll, get_event, insert_listener, remove_listener, run, set_timeout};
 #[cfg(unix)]

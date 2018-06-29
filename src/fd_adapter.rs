@@ -1,11 +1,15 @@
 use mio::{unix::EventedFd, Evented, Poll, PollOpt, Ready, Token};
 use nix::{
-	self, fcntl::{
-		fcntl, FcntlArg::{F_GETFL, F_SETFL}, OFlag,
+	self,
+	fcntl::{
+		fcntl,
+		FcntlArg::{F_GETFL, F_SETFL},
+		OFlag,
 	},
 };
 use std::{
-	io::{self, Read, Result, Write}, os::unix::io::RawFd,
+	io::{self, Read, Result, Write},
+	os::unix::io::RawFd,
 };
 
 pub struct FdAdapter {

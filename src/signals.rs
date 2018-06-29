@@ -1,14 +1,22 @@
 use mio::{unix::EventedFd, PollOpt, Ready, Token};
-use nix::{
-	self, sys::{
-		signal::Signal::{self, *},
-	},
-};
+#[cfg(
+	any(
+		target_os = "freebsd",
+		target_os = "openbsd",
+		target_os = "netbsd",
+		target_os = "dragonfly",
+		target_os = "bitrig",
+		target_os = "macos",
+		target_os = "ios"
+	)
+)]
+use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use nix::sys::signalfd::{siginfo, SfdFlags, SIGNALFD_SIGINFO_SIZE};
-#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd",
-		  target_os = "dragonfly", target_os = "bitrig", target_os = "macos", target_os = "ios"))]
-use nix::sys::event::{KEvent, EventFilter, EventFlag, FilterFlag};
+use nix::{
+	self,
+	sys::signal::Signal::{self, *},
+};
 use std::{cell::RefCell, os::unix::io::RawFd, rc::Rc};
 use Notifiable;
 
@@ -21,10 +29,10 @@ thread_local! {
 	static SIGINFO: RefCell<Option<siginfo>> = RefCell::new(None);
 
 	#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd",
-	          target_os = "dragonfly", target_os = "bitrig", target_os = "macos", target_os = "ios"))]
+			  target_os = "dragonfly", target_os = "bitrig", target_os = "macos", target_os = "ios"))]
 	static KQUEUE: RefCell<Option<RawFd>> = RefCell::new(None);
 	#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd",
-	          target_os = "dragonfly", target_os = "bitrig", target_os = "macos", target_os = "ios"))]
+			  target_os = "dragonfly", target_os = "bitrig", target_os = "macos", target_os = "ios"))]
 	static SIGNUM: RefCell<Option<usize>> = RefCell::new(None);
 }
 
@@ -55,8 +63,17 @@ pub fn set_signal_handler(handler: Rc<Notifiable>) {
 			register_proxy(fd);
 		}
 	}
-	#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd",
-	          target_os = "dragonfly", target_os = "bitrig", target_os = "macos", target_os = "ios"))]
+	#[cfg(
+		any(
+			target_os = "freebsd",
+			target_os = "openbsd",
+			target_os = "netbsd",
+			target_os = "dragonfly",
+			target_os = "bitrig",
+			target_os = "macos",
+			target_os = "ios"
+		)
+	)]
 	{
 		if KQUEUE.with(|x| x.borrow().is_none()) {
 			mask_signals();
@@ -86,8 +103,17 @@ pub fn get_signal_name() -> String {
 	format!("{:?}", signal)
 }
 
-#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd",
-          target_os = "dragonfly", target_os = "bitrig", target_os = "macos", target_os = "ios"))]
+#[cfg(
+	any(
+		target_os = "freebsd",
+		target_os = "openbsd",
+		target_os = "netbsd",
+		target_os = "dragonfly",
+		target_os = "bitrig",
+		target_os = "macos",
+		target_os = "ios"
+	)
+)]
 pub fn get_signal_name() -> String {
 	let signal_number = SIGNUM.with(|x| x.borrow().unwrap());
 	let signal = Signal::from_c_int(signal_number as _).unwrap();
@@ -107,8 +133,17 @@ impl Notifiable for SignalNotificationProxy {
 			let siginfo = unsafe { ::std::mem::transmute::<_, nix::sys::signalfd::siginfo>(buf) };
 			SIGINFO.with(|x| *x.borrow_mut() = Some(siginfo));
 		}
-		#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd",
-		          target_os = "dragonfly", target_os = "bitrig", target_os = "macos", target_os = "ios"))]
+		#[cfg(
+			any(
+				target_os = "freebsd",
+				target_os = "openbsd",
+				target_os = "netbsd",
+				target_os = "dragonfly",
+				target_os = "bitrig",
+				target_os = "macos",
+				target_os = "ios"
+			)
+		)]
 		{
 			let mut eventlist = vec![KEvent::new(0, EventFilter::EVFILT_SIGNAL, EventFlag::empty(), FilterFlag::empty(), 0, 0)];
 			let fd = KQUEUE.with(|x| x.borrow().as_ref().unwrap().clone());
