@@ -196,6 +196,19 @@ impl BufferedTransport {
 		Ok(())
 	}
 
+	pub fn detach(&self) {
+		let registration_borrow = self.registration.borrow();
+		let underlying_borrow = self.underlying.borrow();
+		let poll_obj: &mio::Evented = if self.registration.borrow().is_some() {
+			registration_borrow.as_ref().unwrap()
+		} else {
+			&*underlying_borrow
+		};
+		POLL.with(|x| x.deregister(poll_obj)).ok();
+		remove_listener(self.key.borrow_mut().clone());
+		*self.closed.borrow_mut() = true
+	}
+
 	fn update_registration(&self) {
 		let registration_borrow = self.registration.borrow();
 		let underlying_borrow = self.underlying.borrow();
