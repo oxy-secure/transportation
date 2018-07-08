@@ -6,7 +6,7 @@ use notify::{Notifiable, Notifies};
 use scheduler::{get_event, insert_listener, remove_listener, POLL};
 use std::{
 	cell::RefCell,
-	io::{self, ErrorKind, Read, Write},
+	io::{ErrorKind, Read, Write},
 	mem::swap,
 	rc::Rc,
 };
@@ -275,18 +275,11 @@ impl Notifiable for BufferedTransport {
 			trace!("Read buffer size: {:?}", self.read_buffer.borrow_mut().len());
 		}
 		if event.readiness().is_writable() {
-			loop {
-				if self.write_buffer.borrow_mut().len() == 0 {
-					break;
-				}
+			if self.write_buffer.borrow_mut().len() != 0 {
 				let result = self.underlying.borrow_mut().write(&self.write_buffer.borrow_mut()[..]);
 				trace!("Write result: {:?}", result);
-				if let Err(result) = result {
-					if result.kind() == io::ErrorKind::WouldBlock {
-						break;
-					}
-				} else {
-					let tail = self.write_buffer.borrow_mut().split_off(result.unwrap());
+				if let Ok(written_amount) = result {
+					let tail = self.write_buffer.borrow_mut().split_off(written_amount);
 					*self.write_buffer.borrow_mut() = tail;
 				}
 			}

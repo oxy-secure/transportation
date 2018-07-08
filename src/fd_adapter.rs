@@ -1,12 +1,5 @@
 use mio::{unix::EventedFd, Evented, Poll, PollOpt, Ready, Token};
-use nix::{
-	self,
-	fcntl::{
-		fcntl,
-		FcntlArg::{F_GETFL, F_SETFL},
-		OFlag,
-	},
-};
+use nix;
 use std::{
 	io::{self, Read, Result, Write},
 	os::unix::io::RawFd,
@@ -22,12 +15,6 @@ fn errno<T>() -> io::Result<T> {
 
 impl FdAdapter {
 	pub fn from(fd: RawFd) -> FdAdapter {
-		let bits = fcntl(fd, F_GETFL);
-		if let Ok(bits) = bits {
-			let mut flags = OFlag::from_bits_truncate(bits);
-			flags |= OFlag::O_NONBLOCK;
-			fcntl(fd, F_SETFL(flags)).unwrap();
-		}
 		FdAdapter { fd: fd }
 	}
 }
