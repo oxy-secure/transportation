@@ -19,6 +19,7 @@ pub struct BufferedTransport {
 	pub write_buffer: Rc<RefCell<Vec<u8>>>,
 	notify_hook:      Rc<RefCell<Option<Rc<Notifiable>>>>,
 	closed:           Rc<RefCell<bool>>,
+	detached:         Rc<RefCell<bool>>,
 	pub key:          Rc<RefCell<usize>>,
 	pub read_limit:   Rc<RefCell<usize>>,
 	registration:     Rc<RefCell<Option<Registration>>>,
@@ -32,13 +33,12 @@ impl BufferedTransport {
 			write_buffer: Rc::new(RefCell::new(Vec::new())),
 			notify_hook:  Rc::new(RefCell::new(None)),
 			closed:       Rc::new(RefCell::new(false)),
+			detached:     Rc::new(RefCell::new(false)),
 			key:          Rc::new(RefCell::new(0)),
 			read_limit:   Rc::new(RefCell::new(16384)),
 			registration: Rc::new(RefCell::new(None)),
 		};
-		let key = insert_listener(Rc::new(result.clone()));
-		*result.key.borrow_mut() = key;
-		result.register();
+		result.attach();
 		result
 	}
 
@@ -49,7 +49,9 @@ impl BufferedTransport {
 		(socka.into(), sockb.into())
 	}
 
-	fn register(&self) {
+	pub fn attach(&self) {
+		let key = insert_listener(Rc::new(self.clone()));
+		*self.key.borrow_mut() = key;
 		POLL.with(|x| {
 			let result = x.register(
 				&*self.underlying.borrow_mut(),
@@ -67,6 +69,7 @@ impl BufferedTransport {
 				*self.registration.borrow_mut() = Some(registration);
 			}
 		});
+		*self.detached.borrow_mut() = false;
 	}
 
 	pub fn available(&self) -> usize {
@@ -197,6 +200,9 @@ impl BufferedTransport {
 	}
 
 	pub fn detach(&self) {
+		if *self.detached.borrow() {
+			return;
+		}
 		let registration_borrow = self.registration.borrow();
 		let underlying_borrow = self.underlying.borrow();
 		let poll_obj: &mio::Evented = if self.registration.borrow().is_some() {
@@ -206,10 +212,13 @@ impl BufferedTransport {
 		};
 		POLL.with(|x| x.deregister(poll_obj)).ok();
 		remove_listener(self.key.borrow_mut().clone());
-		*self.closed.borrow_mut() = true
+		*self.detached.borrow_mut() = true;
 	}
 
 	fn update_registration(&self) {
+		if *self.detached.borrow() {
+			return;
+		}
 		let registration_borrow = self.registration.borrow();
 		let underlying_borrow = self.underlying.borrow();
 		let poll_obj: &mio::Evented = if self.registration.borrow().is_some() {
@@ -218,8 +227,7 @@ impl BufferedTransport {
 			&*underlying_borrow
 		};
 		if self.closed.borrow_mut().clone() {
-			POLL.with(|x| x.deregister(poll_obj)).ok();
-			remove_listener(self.key.borrow_mut().clone());
+			self.detach();
 			return;
 		}
 		let mut readiness = Ready::empty();
