@@ -19,7 +19,7 @@ pub struct BufferedTransport {
 	pub write_buffer: Rc<RefCell<Vec<u8>>>,
 	notify_hook:      Rc<RefCell<Option<Rc<Notifiable>>>>,
 	closed:           Rc<RefCell<bool>>,
-	key:              Rc<RefCell<usize>>,
+	pub key:          Rc<RefCell<usize>>,
 	pub read_limit:   Rc<RefCell<usize>>,
 	registration:     Rc<RefCell<Option<Registration>>>,
 }
