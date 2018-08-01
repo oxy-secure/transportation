@@ -70,6 +70,8 @@ pub fn get_event() -> Event {
 pub fn flush() {
 	POLL.with(|x| *x.borrow_mut() = None);
 	LISTENERS.with(|x| x.borrow_mut().clear());
+	TIMECALLBACKS.with(|x| x.borrow_mut().clear());
+	EVENT.with(|x| x.borrow_mut().take());
 }
 
 fn empty() -> bool {
