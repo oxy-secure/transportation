@@ -3,7 +3,7 @@ use byteorder::{self, ByteOrder};
 use mio::unix::UnixReady;
 use mio::{self, PollOpt, Ready, Registration, Token};
 use notify::{Notifiable, Notifies};
-use scheduler::{get_event, insert_listener, remove_listener, POLL};
+use scheduler::{borrow_poll, get_event, insert_listener, remove_listener};
 use std::{
 	cell::RefCell,
 	io::{ErrorKind, Read, Write},
@@ -52,7 +52,7 @@ impl BufferedTransport {
 	pub fn attach(&self) {
 		let key = insert_listener(Rc::new(self.clone()));
 		*self.key.borrow_mut() = key;
-		POLL.with(|x| {
+		borrow_poll(|x| {
 			let result = x.register(
 				&*self.underlying.borrow_mut(),
 				Token(*self.key.borrow_mut()),
@@ -210,7 +210,7 @@ impl BufferedTransport {
 		} else {
 			&*underlying_borrow
 		};
-		POLL.with(|x| x.deregister(poll_obj)).ok();
+		borrow_poll(|x| x.deregister(poll_obj).ok());
 		remove_listener(self.key.borrow_mut().clone());
 		*self.detached.borrow_mut() = true;
 	}
@@ -237,11 +237,11 @@ impl BufferedTransport {
 		if self.read_buffer.borrow_mut().len() < self.read_limit.borrow_mut().clone() {
 			readiness |= Ready::readable();
 		}
-		let result = POLL.with(|x| x.reregister(poll_obj, Token(*self.key.borrow_mut()), readiness, PollOpt::level()));
+		let result = borrow_poll(|x| x.reregister(poll_obj, Token(*self.key.borrow_mut()), readiness, PollOpt::level()));
 		if result.is_err() {
 			warn!("Update registration failed: {:?}", result);
 			*self.closed.borrow_mut() = true;
-			POLL.with(|x| x.deregister(poll_obj)).ok();
+			borrow_poll(|x| x.deregister(poll_obj).ok());
 			remove_listener(self.key.borrow_mut().clone());
 		}
 	}

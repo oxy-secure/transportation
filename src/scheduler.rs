@@ -8,10 +8,10 @@ use std::{
 };
 
 thread_local! {
-	pub static POLL: Poll = Poll::new().unwrap();
-	static LISTENERS: RefCell<HashMap<usize, Rc<Notifiable>>> = RefCell::new(HashMap::new());
-	pub static EVENT: RefCell<Option<Event>> = RefCell::new(None);
-	static TIMECALLBACKS: RefCell<Vec<(Instant, Rc<Notifiable>)>> = RefCell::new(Vec::new());
+	static POLL: RefCell<Option<Poll>> = ::std::default::Default::default();
+	static LISTENERS: RefCell<HashMap<usize, Rc<Notifiable>>> = ::std::default::Default::default();
+	pub static EVENT: RefCell<Option<Event>> = ::std::default::Default::default();
+	static TIMECALLBACKS: RefCell<Vec<(Instant, Rc<Notifiable>)>> = ::std::default::Default::default();
 }
 
 pub fn set_timeout(callback: Rc<Notifiable>, duration: Duration) {
@@ -27,11 +27,16 @@ fn find_key(mut existing_keys: Vec<usize>) -> usize {
 	existing_keys.len()
 }
 
-pub fn borrow_poll<T>(callback: T)
+pub fn borrow_poll<T, R>(callback: T) -> R
 where
-	T: FnOnce(&Poll),
+	T: FnOnce(&Poll) -> R,
 {
-	POLL.with(|x| callback(&*x));
+	POLL.with(|x| {
+		if x.borrow().is_none() {
+			*x.borrow_mut() = Some(Poll::new().unwrap());
+		}
+	});
+	POLL.with(|x| callback(&x.borrow().as_ref().unwrap()))
 }
 
 pub fn remove_listener(key: usize) {
@@ -60,6 +65,11 @@ fn handle_event(event: Event) {
 
 pub fn get_event() -> Event {
 	EVENT.with(|x| x.borrow_mut().unwrap())
+}
+
+pub fn flush() {
+	POLL.with(|x| *x.borrow_mut() = None);
+	LISTENERS.with(|x| x.borrow_mut().clear());
 }
 
 fn empty() -> bool {
@@ -93,7 +103,7 @@ pub fn run() -> ! {
 				}
 			}
 		});
-		POLL.with(|x| x.poll(&mut events, duration).unwrap());
+		borrow_poll(|x| x.poll(&mut events, duration).unwrap());
 		if duration.is_some() && now.elapsed() >= duration.unwrap() {
 			TIMECALLBACKS.with(|x| x.borrow_mut().remove(remove_idx));
 			timecallback.unwrap().notify();

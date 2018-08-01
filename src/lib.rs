@@ -34,7 +34,7 @@ mod transport;
 
 pub use buffered_transport::BufferedTransport;
 pub use notify::{Notifiable, Notifies};
-pub use scheduler::{borrow_poll, get_event, insert_listener, remove_listener, run, set_timeout};
+pub use scheduler::{borrow_poll, flush, get_event, insert_listener, remove_listener, run, set_timeout};
 #[cfg(unix)]
 pub use signals::get_signal_name;
 #[cfg(unix)]
