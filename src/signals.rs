@@ -52,6 +52,34 @@ fn register_proxy(fd: RawFd) {
 	});
 }
 
+pub fn flush() {
+	#[cfg(any(target_os = "linux", target_os = "android"))]
+	{
+		if SIGNALFD.with(|x| x.borrow().is_some()) {
+			nix::unistd::close(SIGNALFD.with(|x| x.borrow().unwrap())).unwrap();
+			SIGNALFD.with(|x| x.borrow_mut().take());
+		}
+	}
+	#[cfg(
+		any(
+			target_os = "freebsd",
+			target_os = "openbsd",
+			target_os = "netbsd",
+			target_os = "dragonfly",
+			target_os = "bitrig",
+			target_os = "macos",
+			target_os = "ios"
+		)
+	)]
+	{
+		if KQUEUE.with(|x| x.borrow().is_some()) {
+			nix::unistd::close(KQUEUE.with(|x| x.borrow().unwrap())).unwrap();
+			KQUEUE.with(|x| x.borrow_mut().take());
+		}
+	}
+	HANDLER.with(|x| *x.borrow_mut() = None);
+}
+
 pub fn set_signal_handler(handler: Rc<Notifiable>) {
 	#[cfg(any(target_os = "linux", target_os = "android"))]
 	{

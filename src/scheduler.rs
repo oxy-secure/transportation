@@ -72,6 +72,7 @@ pub fn flush() {
 	LISTENERS.with(|x| x.borrow_mut().clear());
 	TIMECALLBACKS.with(|x| x.borrow_mut().clear());
 	EVENT.with(|x| x.borrow_mut().take());
+	::signals::flush();
 }
 
 fn empty() -> bool {
