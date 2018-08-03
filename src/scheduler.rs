@@ -139,6 +139,8 @@ fn run_thread() -> ! {
 	loop {
 		do_pending_timecallback();
 		events.clear();
+		// This doesn't actually afford any parallelism, because even though you can epoll_wait() on the same epoll from multiple threads, mio has
+		// internal locks. So, uh... TODO.
 		poll.poll(&mut events, get_sleep_duration()).unwrap();
 		for event in events.iter() {
 			dispatch_event(event);
