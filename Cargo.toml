@@ -1,17 +1,15 @@
+cargo-features = ["edition"]
+
 [package]
 name = "transportation"
-version = "3.0.0-dev"
+version = "4.0.0-dev"
 authors = ["Jenna Magius <pyrosim@gmail.com>"]
 license = "BSD-2-Clause"
-description = "A communications library"
-documentation = "https://oxy-secure.app/doc/transportation/"
-homepage = "https://oxy-secure.app"
+description = "A wrapper around MIO that maps Tokens to callbacks"
 repository = "https://github.com/oxy-secure/transportation"
+edition = '2018'
 
 [dependencies]
 mio = "0.6"
-log = "0.4"
-byteorder = "1"
-
-[target.'cfg(unix)'.dependencies]
-nix = "0.11"
+lazy_static = "1"
+num_cpus = "1"

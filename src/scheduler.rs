@@ -1,118 +1,159 @@
-use mio::{Event, Events, Poll};
-use notify::Notifiable;
-use std::{
-	cell::RefCell,
-	collections::HashMap,
-	rc::Rc,
-	time::{Duration, Instant},
-};
+type Callback = dyn Fn(::mio::Event) -> () + Send + Sync + 'static;
+type TimeCallback = dyn Fn() -> () + Send + Sync + 'static;
 
-thread_local! {
-	static POLL: RefCell<Option<Poll>> = ::std::default::Default::default();
-	static LISTENERS: RefCell<HashMap<usize, Rc<Notifiable>>> = ::std::default::Default::default();
-	pub static EVENT: RefCell<Option<Event>> = ::std::default::Default::default();
-	static TIMECALLBACKS: RefCell<Vec<(Instant, Rc<Notifiable>)>> = ::std::default::Default::default();
+struct TimeCallbackDescriptor {
+	callback:  ::std::sync::Arc<TimeCallback>,
+	next_call: ::std::time::Instant,
+	interval:  Option<::std::time::Duration>,
 }
 
-pub fn set_timeout(callback: Rc<Notifiable>, duration: Duration) {
-	let when = Instant::now() + duration;
-	TIMECALLBACKS.with(|x| x.borrow_mut().push((when, callback)));
+::lazy_static::lazy_static! {
+	static ref POLL: ::std::sync::Mutex<Option<::std::sync::Arc<::mio::Poll>>> = ::std::default::Default::default();
+	static ref CALLBACKS: ::std::sync::Mutex<::std::collections::HashMap<usize, ::std::sync::Arc<Callback>>> = ::std::default::Default::default();
+	static ref TIMECALLBACKS: ::std::sync::Mutex<::std::collections::HashMap<usize, TimeCallbackDescriptor>> = ::std::default::Default::default();
+	static ref TICKER: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(1);
+	static ref STARTED: ::std::sync::atomic::AtomicBool = ::std::default::Default::default();
+	static ref WAKEHANDLE: (::mio::Registration, ::mio::SetReadiness) = ::mio::Registration::new2();
 }
 
-fn find_key(mut existing_keys: Vec<usize>) -> usize {
-	existing_keys.sort();
-	if let Some((k, _)) = existing_keys.iter().enumerate().filter(|(a, b)| a != *b).next() {
-		return k;
+pub fn insert_callback(callback: impl Fn(::mio::Event) -> () + Send + Sync + 'static) -> usize {
+	insert_wrapped_callback(::std::sync::Arc::new(callback))
+}
+
+fn tick() -> usize {
+	let idx = TICKER.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+	if idx > ::std::usize::MAX - 1000 {
+		panic!("Out of indexes");
 	}
-	existing_keys.len()
+	idx
 }
 
-pub fn borrow_poll<T, R>(callback: T) -> R
-where
-	T: FnOnce(&Poll) -> R,
-{
-	POLL.with(|x| {
-		if x.borrow().is_none() {
-			*x.borrow_mut() = Some(Poll::new().unwrap());
+fn insert_wrapped_callback(callback: ::std::sync::Arc<Callback>) -> usize {
+	let mut callbacks_lock = CALLBACKS.lock().unwrap();
+	let idx = tick();
+	let prev = callbacks_lock.insert(idx, callback);
+	assert!(prev.is_none());
+	idx
+}
+
+pub fn get_poll() -> ::std::sync::Arc<::mio::Poll> {
+	let mut poll_lock = POLL.lock().unwrap();
+	if poll_lock.is_none() {
+		*poll_lock = Some(::std::sync::Arc::new(::mio::Poll::new().unwrap()));
+	}
+	poll_lock.as_ref().unwrap().clone()
+}
+
+pub fn set_timeout(callback: impl Fn() -> () + Send + Sync + 'static, timeout: ::std::time::Duration) -> usize {
+	set_timeout_wrapped(::std::sync::Arc::new(callback), timeout, None)
+}
+
+pub fn set_interval(callback: impl Fn() -> () + Send + Sync + 'static, timeout: ::std::time::Duration) -> usize {
+	set_timeout_wrapped(::std::sync::Arc::new(callback), timeout, Some(timeout))
+}
+
+fn set_timeout_wrapped(callback: ::std::sync::Arc<TimeCallback>, timeout: ::std::time::Duration, interval: Option<::std::time::Duration>) -> usize {
+	let ticket = tick();
+	let now = ::std::time::Instant::now();
+	let next_call = now + timeout;
+	let descriptor = TimeCallbackDescriptor {
+		callback,
+		next_call,
+		interval,
+	};
+	{
+		let mut timecallbacks_lock = TIMECALLBACKS.lock().unwrap();
+		timecallbacks_lock.insert(ticket, descriptor);
+	}
+	wake();
+	ticket
+}
+
+pub fn run_auto() {
+	run(::num_cpus::get());
+}
+
+fn wake() {
+	WAKEHANDLE.1.set_readiness(::mio::Ready::readable()).unwrap();
+}
+
+pub fn run(thread_count: usize) -> ! {
+	assert!(thread_count >= 1);
+	if STARTED.swap(true, ::std::sync::atomic::Ordering::Relaxed) {
+		panic!("Attempted to launch transportation twice.");
+	}
+	get_poll()
+		.register(&WAKEHANDLE.0, ::mio::Token(0), ::mio::Ready::readable(), ::mio::PollOpt::edge())
+		.unwrap();
+	for _ in 0..(thread_count - 1) {
+		::std::thread::spawn(|| run_thread());
+	}
+	run_thread();
+}
+
+fn do_pending_timecallback() {
+	let now = ::std::time::Instant::now();
+	let mut earliest = now;
+	let mut idx = None;
+	let mut callback = None;
+	{
+		let mut timecallbacks_lock = TIMECALLBACKS.lock().unwrap();
+		for (k, v) in &*timecallbacks_lock {
+			if v.next_call <= earliest {
+				earliest = v.next_call;
+				idx = Some(*k);
+			}
 		}
-	});
-	POLL.with(|x| callback(&x.borrow().as_ref().unwrap()))
-}
-
-pub fn remove_listener(key: usize) {
-	let result = LISTENERS.with(|x| x.borrow_mut().remove(&key));
-	if result.is_none() {
-		debug!("Attempted to remove a non-existent listener");
+		if idx.is_some() {
+			callback = timecallbacks_lock.remove(&idx.unwrap());
+		}
+	}
+	if let Some(mut callback) = callback {
+		(callback.callback)();
+		if callback.interval.is_some() {
+			let next_call = ::std::time::Instant::now() + callback.interval.unwrap();
+			callback.next_call = next_call;
+			TIMECALLBACKS.lock().unwrap().insert(idx.unwrap(), callback);
+		}
 	}
 }
 
-pub fn insert_listener(listener: Rc<Notifiable>) -> usize {
-	let key = LISTENERS.with(|x| find_key(x.borrow_mut().keys().cloned().collect()));
-	LISTENERS.with(|x| x.borrow_mut().insert(key, listener));
-	key
+fn get_sleep_duration() -> Option<::std::time::Duration> {
+	let mut result = None;
+	let now = ::std::time::Instant::now();
+	for (_k, v) in &*TIMECALLBACKS.lock().unwrap() {
+		if v.next_call <= now {
+			return Some(::std::time::Duration::from_secs(0));
+		}
+		let delay = v.next_call.duration_since(now);
+		if result.is_none() || delay < result.unwrap() {
+			result = Some(delay)
+		}
+	}
+	result
 }
 
-fn handle_event(event: Event) {
-	EVENT.with(|x| *x.borrow_mut() = Some(event));
-	let key: usize = event.token().0;
-	let handler = LISTENERS.with(|x| x.borrow_mut().get(&key).map(|x| x.clone()));
-	if handler.is_none() {
-		warn!("Event with no handler: {:?}", event);
+fn run_thread() -> ! {
+	let mut events = ::mio::Events::with_capacity(1);
+	let poll = get_poll();
+	loop {
+		do_pending_timecallback();
+		events.clear();
+		poll.poll(&mut events, get_sleep_duration()).unwrap();
+		for event in events.iter() {
+			dispatch_event(event);
+		}
+	}
+}
+
+fn dispatch_event(event: ::mio::Event) {
+	let token = event.token().0;
+	if token == 0 {
 		return;
 	}
-	handler.unwrap().notify();
-}
-
-pub fn get_event() -> Event {
-	EVENT.with(|x| x.borrow_mut().unwrap())
-}
-
-pub fn flush() {
-	POLL.with(|x| *x.borrow_mut() = None);
-	LISTENERS.with(|x| x.borrow_mut().clear());
-	TIMECALLBACKS.with(|x| x.borrow_mut().clear());
-	EVENT.with(|x| x.borrow_mut().take());
-	::signals::flush();
-}
-
-fn empty() -> bool {
-	LISTENERS.with(|x| x.borrow_mut().keys().len()) == 0 && TIMECALLBACKS.with(|x| x.borrow().len()) == 0
-}
-
-pub fn run() -> ! {
-	trace!("Transportation main-loop started");
-	let mut events = Events::with_capacity(1024);
-	loop {
-		if empty() {
-			trace!("Exiting due to empty condition.");
-			::std::process::exit(0);
-		}
-		let now = Instant::now();
-		let mut timecallback = None;
-		let mut duration = None;
-		let mut remove_idx = 0;
-		TIMECALLBACKS.with(|x| {
-			for (k, v) in x.borrow().iter().enumerate() {
-				if v.0 < now {
-					timecallback = Some(v.1.clone());
-					duration = Some(Duration::from_secs(0));
-					remove_idx = k;
-					return;
-				}
-				if duration.is_none() || v.0.duration_since(now) < duration.unwrap() {
-					timecallback = Some(v.1.clone());
-					duration = Some(v.0.duration_since(now));
-					remove_idx = k;
-				}
-			}
-		});
-		borrow_poll(|x| x.poll(&mut events, duration).unwrap());
-		if duration.is_some() && now.elapsed() >= duration.unwrap() {
-			TIMECALLBACKS.with(|x| x.borrow_mut().remove(remove_idx));
-			timecallback.unwrap().notify();
-		}
-		for event in events.iter() {
-			handle_event(event);
-		}
-	}
+	let callback = {
+		let callbacks_lock = CALLBACKS.lock().unwrap();
+		callbacks_lock.get(&token).unwrap().clone()
+	};
+	(*callback)(event);
 }
