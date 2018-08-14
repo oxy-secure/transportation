@@ -1,119 +1,175 @@
-use mio::{Event, Events, Poll};
-use notify::Notifiable;
-use std::{
-	cell::RefCell,
-	collections::HashMap,
-	rc::Rc,
-	time::{Duration, Instant},
-};
-
 thread_local! {
-	static POLL: RefCell<Option<Poll>> = ::std::default::Default::default();
-	static LISTENERS: RefCell<HashMap<usize, Rc<Notifiable>>> = ::std::default::Default::default();
-	pub static EVENT: RefCell<Option<Event>> = ::std::default::Default::default();
-	static TIMECALLBACKS: RefCell<Vec<(Instant, Rc<Notifiable>)>> = ::std::default::Default::default();
+	static POLL: ::mio::Poll = ::mio::Poll::new().unwrap();
+	static EVENT_HANDLERS: ::std::cell::RefCell<::std::collections::BTreeMap<usize, ::std::rc::Rc<Fn(::mio::Event) -> () + 'static>>> = ::std::default::Default::default();
+	static TIME_CALLBACKS: ::std::cell::RefCell<::std::collections::BTreeMap<usize, TimeCallback>> = ::std::default::Default::default();
+	static TICKER: ::std::cell::RefCell<usize> = ::std::cell::RefCell::new(1);
+	static EVENT_BUFFER: ::std::rc::Rc<::std::cell::RefCell<::mio::Events>> = ::std::rc::Rc::new(::std::cell::RefCell::new(::mio::Events::with_capacity(1024)));
 }
 
-pub fn set_timeout(callback: Rc<Notifiable>, duration: Duration) {
-	let when = Instant::now() + duration;
-	TIMECALLBACKS.with(|x| x.borrow_mut().push((when, callback)));
+struct TimeCallback {
+	callback: ::std::rc::Rc<Fn() -> () + 'static>,
+	when:     ::std::time::Instant,
+	interval: Option<::std::time::Duration>,
 }
 
-fn find_key(mut existing_keys: Vec<usize>) -> usize {
-	existing_keys.sort();
-	if let Some((k, _)) = existing_keys.iter().enumerate().filter(|(a, b)| a != *b).next() {
-		return k;
+fn tick() -> usize {
+	TICKER.with(|x| {
+		let a: usize = *x.borrow();
+		*x.borrow_mut() = a.checked_add(1).expect("Ran out of callback IDs");
+		a
+	})
+}
+
+/// Insert a listener and return a unique usize value that can be used to register one or more [`Evented`](::mio::Evented)s with the internal poll
+/// for this thread. Note: this callback will never be called unless [`borrow_poll`]`(|poll| poll.`[`register`](::mio::Poll::register)`())` is called
+/// with the returned token.
+pub fn insert_listener(listener: impl Fn(::mio::Event) -> () + 'static) -> usize {
+	let idx = tick();
+	EVENT_HANDLERS.with(|x| x.borrow_mut().insert(idx, ::std::rc::Rc::new(listener)));
+	idx
+}
+
+/// Remove a previously registered listener. Returns true if a listener was removed and false otherwise. Note: The Evented item must still be removed
+/// from the poll separately.
+pub fn remove_listener(idx: usize) -> bool {
+	EVENT_HANDLERS.with(|x| x.borrow_mut().remove(&idx).is_some())
+}
+
+/// Call callback once after timeout has passed. Returns an identifier that is unique across insert_listener, set_timeout, and set_interval that can
+/// be used with the clear_timeout function.
+pub fn set_timeout(callback: impl Fn() -> () + 'static, timeout: ::std::time::Duration) -> usize {
+	let callback = ::std::rc::Rc::new(callback);
+	let when = ::std::time::Instant::now() + timeout;
+	let idx = tick();
+	TIME_CALLBACKS.with(|x| {
+		x.borrow_mut().insert(
+			idx,
+			TimeCallback {
+				callback,
+				when,
+				interval: None,
+			},
+		)
+	});
+	idx
+}
+
+/// Call callback after interval time has passed, then again once every interval. Returns an identifier that is unique across insert_listener,
+/// set_timeout, and set_interval that can be used with the clear_interval function.
+pub fn set_interval(callback: impl Fn() -> () + 'static, interval: ::std::time::Duration) -> usize {
+	let callback = ::std::rc::Rc::new(callback);
+	let when = ::std::time::Instant::now() + interval;
+	let idx = tick();
+	TIME_CALLBACKS.with(|x| {
+		x.borrow_mut().insert(
+			idx,
+			TimeCallback {
+				callback,
+				when,
+				interval: Some(interval),
+			},
+		)
+	});
+	idx
+}
+
+/// Remove an existing timeout before it has occured. Returns true if a timeout was removed or false otherwise.
+pub fn clear_timeout(idx: usize) -> bool {
+	if TIME_CALLBACKS.with(|x| x.borrow().get(&idx).map(|y| y.interval.is_some()).unwrap_or(true)) {
+		return false;
 	}
-	existing_keys.len()
+	TIME_CALLBACKS.with(|x| x.borrow_mut().remove(&idx).is_some())
 }
 
-pub fn borrow_poll<T, R>(callback: T) -> R
-where
-	T: FnOnce(&Poll) -> R,
-{
-	POLL.with(|x| {
-		if x.borrow().is_none() {
-			*x.borrow_mut() = Some(Poll::new().unwrap());
+/// Remove an existing interval. Returns true if an interval was removed or false otherwise.
+pub fn clear_interval(idx: usize) -> bool {
+	if TIME_CALLBACKS.with(|x| x.borrow().get(&idx).map(|y| y.interval.is_none()).unwrap_or(true)) {
+		return false;
+	}
+	TIME_CALLBACKS.with(|x| x.borrow_mut().remove(&idx).is_some())
+}
+
+fn get_soonest_timeout() -> (Option<usize>, Option<::std::time::Duration>) {
+	let mut idx = None;
+	let mut soonest_instant = None;
+	TIME_CALLBACKS.with(|x| {
+		for (k, v) in x.borrow_mut().iter() {
+			if soonest_instant.is_none() || v.when < soonest_instant.unwrap() {
+				idx = Some(*k);
+				soonest_instant = Some(v.when);
+			}
 		}
 	});
-	POLL.with(|x| callback(&x.borrow().as_ref().unwrap()))
-}
-
-pub fn remove_listener(key: usize) {
-	let result = LISTENERS.with(|x| x.borrow_mut().remove(&key));
-	if result.is_none() {
-		debug!("Attempted to remove a non-existent listener");
+	if idx.is_none() {
+		(None, None)
+	} else {
+		let now = ::std::time::Instant::now();
+		if soonest_instant.unwrap() <= now {
+			(idx, Some(::std::time::Duration::from_secs(0)))
+		} else {
+			(idx, Some(soonest_instant.unwrap().duration_since(now)))
+		}
 	}
 }
 
-pub fn insert_listener(listener: Rc<Notifiable>) -> usize {
-	let key = LISTENERS.with(|x| find_key(x.borrow_mut().keys().cloned().collect()));
-	LISTENERS.with(|x| x.borrow_mut().insert(key, listener));
-	key
-}
-
-fn handle_event(event: Event) {
-	EVENT.with(|x| *x.borrow_mut() = Some(event));
-	let key: usize = event.token().0;
-	let handler = LISTENERS.with(|x| x.borrow_mut().get(&key).map(|x| x.clone()));
-	if handler.is_none() {
-		warn!("Event with no handler: {:?}", event);
-		return;
+fn dispatch_timeout(time_idx: usize) {
+	let now = ::std::time::Instant::now();
+	if TIME_CALLBACKS.with(|x| x.borrow().get(&time_idx).unwrap().when <= now) {
+		if TIME_CALLBACKS.with(|x| x.borrow().get(&time_idx).unwrap().interval.is_none()) {
+			let callback = TIME_CALLBACKS.with(|x| x.borrow_mut().remove(&time_idx).unwrap());
+			(callback.callback)();
+		} else {
+			let callback = TIME_CALLBACKS.with(|x| {
+				let interval = x.borrow().get(&time_idx).unwrap().interval.unwrap();
+				x.borrow_mut().get_mut(&time_idx).unwrap().when = now + interval;
+				x.borrow().get(&time_idx).unwrap().callback.clone()
+			});
+			(*callback)();
+		}
 	}
-	handler.unwrap().notify();
 }
 
-pub fn get_event() -> Event {
-	EVENT.with(|x| x.borrow_mut().unwrap())
+/// Run callback with a reference to the internal MIO poll for the current thread. Transportation keeps a separate poll for every thread and it is
+/// appropriate to run transportation from multiple threads simultaneously.
+pub fn borrow_poll<T, R>(callback: T) -> R
+where
+	T: Fn(&::mio::Poll) -> R,
+{
+	POLL.with(|x| (callback)(x))
 }
 
-pub fn flush() {
-	POLL.with(|x| *x.borrow_mut() = None);
-	LISTENERS.with(|x| x.borrow_mut().clear());
-	TIMECALLBACKS.with(|x| x.borrow_mut().clear());
-	EVENT.with(|x| x.borrow_mut().take());
-	#[cfg(unix)]
-	::signals::flush();
+fn dispatch_event(event: ::mio::Event) {
+	let token: usize = event.token().0;
+	let callback = EVENT_HANDLERS.with(|x| x.borrow().get(&token).map(|x| x.clone()));
+	if let Some(callback) = callback {
+		(*callback)(event);
+	}
 }
 
 fn empty() -> bool {
-	LISTENERS.with(|x| x.borrow_mut().keys().len()) == 0 && TIMECALLBACKS.with(|x| x.borrow().len()) == 0
+	TIME_CALLBACKS.with(|x| x.borrow().is_empty()) && EVENT_HANDLERS.with(|x| x.borrow().is_empty())
 }
 
-pub fn run() -> ! {
-	trace!("Transportation main-loop started");
-	let mut events = Events::with_capacity(1024);
+/// Blocks the thread by polling on the internal MIO poll, dispatching events to event callbacks and calling set_timeout/set_interval callbacks at
+/// the appropriate times. Returns when there are no remaining registered time or event callbacks. Panics if called while transportation is already
+/// running in this same thread.
+pub fn run() {
+	let events_rc = EVENT_BUFFER.with(|x| x.clone());
+	let events: &mut ::mio::Events = &mut *events_rc.borrow_mut();
 	loop {
 		if empty() {
-			trace!("Exiting due to empty condition.");
-			::std::process::exit(0);
+			return;
 		}
-		let now = Instant::now();
-		let mut timecallback = None;
-		let mut duration = None;
-		let mut remove_idx = 0;
-		TIMECALLBACKS.with(|x| {
-			for (k, v) in x.borrow().iter().enumerate() {
-				if v.0 < now {
-					timecallback = Some(v.1.clone());
-					duration = Some(Duration::from_secs(0));
-					remove_idx = k;
-					return;
-				}
-				if duration.is_none() || v.0.duration_since(now) < duration.unwrap() {
-					timecallback = Some(v.1.clone());
-					duration = Some(v.0.duration_since(now));
-					remove_idx = k;
-				}
-			}
-		});
-		borrow_poll(|x| x.poll(&mut events, duration).unwrap());
-		if duration.is_some() && now.elapsed() >= duration.unwrap() {
-			TIMECALLBACKS.with(|x| x.borrow_mut().remove(remove_idx));
-			timecallback.unwrap().notify();
+		let (time_idx, timeout) = get_soonest_timeout();
+		events.clear();
+		POLL.with(|x| x.poll(events, timeout)).unwrap();
+
+		if let Some(time_idx) = time_idx {
+			dispatch_timeout(time_idx);
 		}
+
 		for event in events.iter() {
-			handle_event(event);
+			dispatch_event(event);
 		}
 	}
 }

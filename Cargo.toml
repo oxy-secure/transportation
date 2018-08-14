@@ -1,17 +1,10 @@
 [package]
 name = "transportation"
-version = "3.0.0-dev"
+version = "5.0.0-dev"
 authors = ["Jenna Magius <pyrosim@gmail.com>"]
 license = "BSD-2-Clause"
-description = "A communications library"
-documentation = "https://oxy-secure.app/doc/transportation/"
-homepage = "https://oxy-secure.app"
+description = "A callback wrapper around MIO"
 repository = "https://github.com/oxy-secure/transportation"
 
 [dependencies]
 mio = "0.6"
-log = "0.4"
-byteorder = "1"
-
-[target.'cfg(unix)'.dependencies]
-nix = "0.11"
