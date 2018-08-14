@@ -1,6 +1,6 @@
 [package]
 name = "transportation"
-version = "5.0.0-dev"
+version = "5.0.0"
 authors = ["Jenna Magius <pyrosim@gmail.com>"]
 license = "BSD-2-Clause"
 description = "A callback wrapper around MIO"
