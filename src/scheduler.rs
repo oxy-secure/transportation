@@ -1,15 +1,30 @@
 thread_local! {
 	static POLL: ::mio::Poll = ::mio::Poll::new().unwrap();
-	static EVENT_HANDLERS: ::std::cell::RefCell<::std::collections::BTreeMap<usize, ::std::rc::Rc<Fn(::mio::Event) -> () + 'static>>> = ::std::default::Default::default();
+	static EVENT_HANDLERS: ::std::cell::RefCell<::std::collections::BTreeMap<usize, ::std::rc::Rc<dyn Fn(::mio::Event) -> () + 'static>>> = ::std::default::Default::default();
 	static TIME_CALLBACKS: ::std::cell::RefCell<::std::collections::BTreeMap<usize, TimeCallback>> = ::std::default::Default::default();
+
+	// Starts at 1 because 0 is reserved for run_in_thread
 	static TICKER: ::std::cell::RefCell<usize> = ::std::cell::RefCell::new(1);
+
 	static EVENT_BUFFER: ::std::rc::Rc<::std::cell::RefCell<::mio::Events>> = ::std::rc::Rc::new(::std::cell::RefCell::new(::mio::Events::with_capacity(1024)));
+	static REMOTE_RECEIVER: ::std::cell::RefCell<Option<::std::sync::mpsc::Receiver<Box<dyn Fn() -> () + Send + 'static>>>> = ::std::default::Default::default();
+	static REMOTE_REGISTRATION: ::std::cell::RefCell<Option<::mio::Registration>> = ::std::default::Default::default();
+	static SHOULD_CONTINUE: ::std::cell::RefCell<bool> = ::std::default::Default::default();
+}
+
+lazy_static! {
+	static ref REMOTES: ::std::sync::Mutex<::std::collections::HashMap<::std::thread::ThreadId, Remote>> = ::std::default::Default::default();
 }
 
 struct TimeCallback {
-	callback: ::std::rc::Rc<Fn() -> () + 'static>,
+	callback: ::std::rc::Rc<dyn Fn() -> () + 'static>,
 	when:     ::std::time::Instant,
 	interval: Option<::std::time::Duration>,
+}
+
+struct Remote {
+	set_readiness: ::mio::SetReadiness,
+	run_sender:    ::std::sync::mpsc::Sender<Box<dyn Fn() -> () + Send + 'static>>,
 }
 
 fn tick() -> usize {
@@ -140,6 +155,12 @@ where
 
 fn dispatch_event(event: ::mio::Event) {
 	let token: usize = event.token().0;
+	if token == 0 {
+		while let Ok(callback) = REMOTE_RECEIVER.with(|x| x.borrow().as_ref().unwrap().try_recv()) {
+			(*callback)();
+		}
+		return;
+	}
 	let callback = EVENT_HANDLERS.with(|x| x.borrow().get(&token).map(|x| x.clone()));
 	if let Some(callback) = callback {
 		(*callback)(event);
@@ -150,26 +171,91 @@ fn empty() -> bool {
 	TIME_CALLBACKS.with(|x| x.borrow().is_empty()) && EVENT_HANDLERS.with(|x| x.borrow().is_empty())
 }
 
+fn turn_internal(events: &mut ::mio::Events) {
+	let (time_idx, timeout) = get_soonest_timeout();
+	events.clear();
+	POLL.with(|x| x.poll(events, timeout)).unwrap();
+
+	if let Some(time_idx) = time_idx {
+		dispatch_timeout(time_idx);
+	}
+
+	for event in events.iter() {
+		dispatch_event(event);
+	}
+}
+
 /// Blocks the thread by polling on the internal MIO poll, dispatching events to event callbacks and calling set_timeout/set_interval callbacks at
 /// the appropriate times. Returns when there are no remaining registered time or event callbacks. Panics if called while transportation is already
 /// running in this same thread.
 pub fn run() {
+	init_loop();
 	let events_rc = EVENT_BUFFER.with(|x| x.clone());
 	let events: &mut ::mio::Events = &mut *events_rc.borrow_mut();
-	loop {
+	while SHOULD_CONTINUE.with(|x| *x.borrow()) {
 		if empty() {
 			return;
 		}
-		let (time_idx, timeout) = get_soonest_timeout();
-		events.clear();
-		POLL.with(|x| x.poll(events, timeout)).unwrap();
-
-		if let Some(time_idx) = time_idx {
-			dispatch_timeout(time_idx);
-		}
-
-		for event in events.iter() {
-			dispatch_event(event);
-		}
+		turn_internal(events);
 	}
+}
+
+/// Exactly the same as [`run`], but does not exit when empty. This is useful for threadpool workers (see [`run_in_thread`])
+pub fn run_worker() {
+	init_loop();
+	let events_rc = EVENT_BUFFER.with(|x| x.clone());
+	let events: &mut ::mio::Events = &mut *events_rc.borrow_mut();
+	while SHOULD_CONTINUE.with(|x| *x.borrow()) {
+		turn_internal(events);
+	}
+}
+
+fn init_loop() {
+	SHOULD_CONTINUE.with(|x| *x.borrow_mut() = true);
+
+	if REMOTE_RECEIVER.with(|x| x.borrow().is_some()) {
+		return;
+	}
+
+	let (tx, rx) = ::std::sync::mpsc::channel();
+	let thread_id = ::std::thread::current().id();
+	let (registration, set_readiness) = ::mio::Registration::new2();
+	REMOTE_RECEIVER.with(|x| *x.borrow_mut() = Some(rx));
+	borrow_poll(|poll| {
+		poll.register(&registration, ::mio::Token(0), ::mio::Ready::readable(), ::mio::PollOpt::edge())
+			.unwrap()
+	});
+	REMOTE_REGISTRATION.with(|x| *x.borrow_mut() = Some(registration));
+	let mut remotes_lock = REMOTES.lock().unwrap();
+	remotes_lock.insert(
+		thread_id,
+		Remote {
+			set_readiness,
+			run_sender: tx,
+		},
+	);
+}
+
+/// Run a callback in a remote thread that is owned by transportation. Spins until the remote thread calls [`run`] or [`run_worker`]. May deadlock if
+/// the remote thread doesn't enter the transportation event loop. May return `Err(())` if the remote thread has terminated.
+pub fn run_in_thread(thread_id: ::std::thread::ThreadId, callback: impl Fn() -> () + Send + 'static) -> Result<(), ()> {
+	let callback = Box::new(callback);
+	loop {
+		let remotes = REMOTES.lock().unwrap();
+		let remote = match remotes.get(&thread_id) {
+			Some(remote) => remote,
+			None => {
+				::std::thread::yield_now();
+				continue;
+			}
+		};
+		remote.run_sender.send(callback).map_err(|_| ())?;
+		remote.set_readiness.set_readiness(::mio::Ready::readable()).map_err(|_| ())?;
+		return Ok(());
+	}
+}
+
+/// Causes the event loop to exit the next time it would iterate. The event loop may be resumed with [`run()`] or [`run_worker()`]
+pub fn stop() {
+	SHOULD_CONTINUE.with(|x| *x.borrow_mut() = false);
 }

@@ -8,3 +8,4 @@ repository = "https://github.com/oxy-secure/transportation"
 
 [dependencies]
 mio = "0.6"
+lazy_static = "1"

@@ -11,7 +11,11 @@
 //! ```
 
 pub extern crate mio;
+#[macro_use]
+extern crate lazy_static;
 
 mod scheduler;
 
-pub use scheduler::{borrow_poll, clear_interval, clear_timeout, insert_listener, remove_listener, run, set_interval, set_timeout};
+pub use scheduler::{
+	borrow_poll, clear_interval, clear_timeout, insert_listener, remove_listener, run, run_in_thread, run_worker, set_interval, set_timeout, stop,
+};
