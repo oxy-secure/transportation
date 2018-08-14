@@ -1,2 +1,2 @@
 # transportation
-A Rust communications library.
+A callback wrapper around MIO.
