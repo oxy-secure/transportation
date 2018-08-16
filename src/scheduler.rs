@@ -1,5 +1,5 @@
 thread_local! {
-	static POLL: ::mio::Poll = ::mio::Poll::new().unwrap();
+	static POLL: ::std::cell::RefCell<::mio::Poll> = ::std::cell::RefCell::new(::mio::Poll::new().unwrap());
 	static EVENT_HANDLERS: ::std::cell::RefCell<::std::collections::BTreeMap<usize, ::std::rc::Rc<dyn Fn(::mio::Event) -> () + 'static>>> = ::std::default::Default::default();
 	static TIME_CALLBACKS: ::std::cell::RefCell<::std::collections::BTreeMap<usize, TimeCallback>> = ::std::default::Default::default();
 
@@ -10,6 +10,7 @@ thread_local! {
 	static REMOTE_RECEIVER: ::std::cell::RefCell<Option<::std::sync::mpsc::Receiver<Box<dyn Fn() -> () + Send + 'static>>>> = ::std::default::Default::default();
 	static REMOTE_REGISTRATION: ::std::cell::RefCell<Option<::mio::Registration>> = ::std::default::Default::default();
 	static SHOULD_CONTINUE: ::std::cell::RefCell<bool> = ::std::default::Default::default();
+	static FLUSH_FLAG: ::std::cell::RefCell<bool> = ::std::cell::RefCell::new(false);
 }
 
 lazy_static! {
@@ -33,6 +34,22 @@ fn tick() -> usize {
 		*x.borrow_mut() = a.checked_add(1).expect("Ran out of callback IDs");
 		a
 	})
+}
+
+/// Drop the existing Poll for this thread and replace it with a freshly generated poll. Also drops all registered event_handler callbacks,
+/// set_timeout callbacks, and set_interval callbacks. This is (exclusively?) useful after a fork() when you want to separate yourself from the old
+/// process without calling exec(). Should only be used from the main thread and when no other threads have been created. Should only be used when
+/// inside the transportation event loop (i.e. when run() or run_worker() are on the stack).
+pub fn flush() {
+	let new_poll = ::mio::Poll::new().unwrap();
+	POLL.with(|x| x.replace(new_poll));
+	EVENT_HANDLERS.with(|x| x.borrow_mut().clear());
+	TIME_CALLBACKS.with(|x| x.borrow_mut().clear());
+	TICKER.with(|x| *x.borrow_mut() = 1);
+	REMOTE_RECEIVER.with(|x| x.borrow_mut().take());
+	REMOTE_REGISTRATION.with(|x| x.borrow_mut().take());
+	init_loop();
+	FLUSH_FLAG.with(|x| *x.borrow_mut() = true);
 }
 
 /// Insert a listener and return a unique usize value that can be used to register one or more [`Evented`](::mio::Evented)s with the internal poll
@@ -150,7 +167,7 @@ pub fn borrow_poll<T, R>(callback: T) -> R
 where
 	T: Fn(&::mio::Poll) -> R,
 {
-	POLL.with(|x| (callback)(x))
+	POLL.with(|x| (callback)(&*x.borrow()))
 }
 
 fn dispatch_event(event: ::mio::Event) {
@@ -174,14 +191,22 @@ fn empty() -> bool {
 fn turn_internal(events: &mut ::mio::Events) {
 	let (time_idx, timeout) = get_soonest_timeout();
 	events.clear();
-	POLL.with(|x| x.poll(events, timeout)).unwrap();
+	POLL.with(|x| x.borrow().poll(events, timeout)).unwrap();
 
 	if let Some(time_idx) = time_idx {
 		dispatch_timeout(time_idx);
+		if FLUSH_FLAG.with(|x| *x.borrow()) {
+			FLUSH_FLAG.with(|x| *x.borrow_mut() = false);
+			return;
+		}
 	}
 
 	for event in events.iter() {
 		dispatch_event(event);
+		if FLUSH_FLAG.with(|x| *x.borrow()) {
+			FLUSH_FLAG.with(|x| *x.borrow_mut() = false);
+			return;
+		}
 	}
 }
 
