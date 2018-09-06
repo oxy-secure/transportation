@@ -18,7 +18,7 @@ lazy_static! {
 }
 
 struct TimeCallback {
-	callback: ::std::rc::Rc<dyn Fn() -> () + 'static>,
+	callback: ::std::rc::Rc<::std::cell::RefCell<dyn FnMut() -> () + 'static>>,
 	when:     ::std::time::Instant,
 	interval: Option<::std::time::Duration>,
 }
@@ -69,8 +69,8 @@ pub fn remove_listener(idx: usize) -> bool {
 
 /// Call callback once after timeout has passed. Returns an identifier that is unique across insert_listener, set_timeout, and set_interval that can
 /// be used with the clear_timeout function.
-pub fn set_timeout(callback: impl Fn() -> () + 'static, timeout: ::std::time::Duration) -> usize {
-	let callback = ::std::rc::Rc::new(callback);
+pub fn set_timeout(callback: impl FnMut() -> () + 'static, timeout: ::std::time::Duration) -> usize {
+	let callback = ::std::rc::Rc::new(::std::cell::RefCell::new(callback));
 	let when = ::std::time::Instant::now() + timeout;
 	let idx = tick();
 	TIME_CALLBACKS.with(|x| {
@@ -88,8 +88,8 @@ pub fn set_timeout(callback: impl Fn() -> () + 'static, timeout: ::std::time::Du
 
 /// Call callback after interval time has passed, then again once every interval. Returns an identifier that is unique across insert_listener,
 /// set_timeout, and set_interval that can be used with the clear_interval function.
-pub fn set_interval(callback: impl Fn() -> () + 'static, interval: ::std::time::Duration) -> usize {
-	let callback = ::std::rc::Rc::new(callback);
+pub fn set_interval(callback: impl FnMut() -> () + 'static, interval: ::std::time::Duration) -> usize {
+	let callback = ::std::rc::Rc::new(::std::cell::RefCell::new(callback));
 	let when = ::std::time::Instant::now() + interval;
 	let idx = tick();
 	TIME_CALLBACKS.with(|x| {
@@ -149,14 +149,14 @@ fn dispatch_timeout(time_idx: usize) {
 	if TIME_CALLBACKS.with(|x| x.borrow().get(&time_idx).unwrap().when <= now) {
 		if TIME_CALLBACKS.with(|x| x.borrow().get(&time_idx).unwrap().interval.is_none()) {
 			let callback = TIME_CALLBACKS.with(|x| x.borrow_mut().remove(&time_idx).unwrap());
-			(callback.callback)();
+			(&mut *callback.callback.borrow_mut())();
 		} else {
 			let callback = TIME_CALLBACKS.with(|x| {
 				let interval = x.borrow().get(&time_idx).unwrap().interval.unwrap();
 				x.borrow_mut().get_mut(&time_idx).unwrap().when = now + interval;
 				x.borrow().get(&time_idx).unwrap().callback.clone()
 			});
-			(*callback)();
+			(&mut *callback.borrow_mut())();
 		}
 	}
 }
